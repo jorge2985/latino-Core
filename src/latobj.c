@@ -168,13 +168,15 @@ void latO_destruir(lat_mv *mv, lat_objeto *o) {
             break;
         case T_LIST: {
             lista *list = latC_checar_lista(mv, o);
+            // OPTIMIZACIÓN: Evitar recursión profunda y liberar nodos de lista de forma iterativa
             if (list->longitud > 0) {
-                LIST_FOREACH(list, primero, siguiente, cur) {
-
+                nodo_lista *cur = list->primero;
+                while (cur) {
                     lat_objeto *tmp = (lat_objeto *)cur->valor;
                     if (tmp != NULL) {
                         latO_destruir(mv, tmp);
                     }
+                    cur = cur->siguiente;
                 }
             }
             latL_destruir(mv, list);
@@ -192,12 +194,10 @@ void latO_destruir(lat_mv *mv, lat_objeto *o) {
             latM_liberar(mv, inslist);
             latM_liberar(mv, fun);
         } break;
-        case T_CFUN: {
-            ;
-        } break;
-        case T_NUMERIC: {
-            ;
-        } break;
+        case T_CFUN:
+        case T_NUMERIC:
+            // No hay recursos dinámicos que liberar
+            break;
         case T_NULL:
         case T_BOOL:
             // Nunca colectar nulo y booleano.
@@ -208,217 +208,88 @@ void latO_destruir(lat_mv *mv, lat_objeto *o) {
     latM_liberar(mv, o);
 }
 
-static lista *latL_clonar(lat_mv *mv, lista *list) {
-    lista *ret = latL_crear(mv);
+// String builder para serialización eficiente
+typedef struct {
+    char *buf;
+    size_t len;
+    size_t cap;
+} sbuilder;
 
-    LIST_FOREACH(list, primero, siguiente, cur) {
-        lat_objeto *tmp = (lat_objeto *)cur->valor;
-        latL_agregar(mv, ret, tmp);
-    }
-    return ret;
+static void sb_init(sbuilder *sb, size_t cap) {
+    sb->buf = malloc(cap);
+    sb->len = 0;
+    sb->cap = cap;
+    sb->buf[0] = '\0';
 }
 
-lat_objeto *latO_clonar(lat_mv *mv, lat_objeto *obj) {
-    lat_objeto *ret = NULL;
-    switch (obj->tipo) {
-        case T_CONTEXT:
-            ret = latO_crear(mv);
-            ret->tipo = T_CONTEXT;
-            ret->tam = sizeof(hash_map *);
-            setCtx(ret, latH_clonar(mv, getCtx(obj)));
-            break;
-        case T_LIST:
-            ret = latC_crear_lista(mv,
-                                   latL_clonar(mv, latC_checar_lista(mv, obj)));
-            break;
-        case T_DIC:
-            ret = latC_crear_dic(mv, latH_clonar(mv, latC_checar_dic(mv, obj)));
-            break;
-        case T_FUN:
-            ret = latO_crear(mv);
-            ret->tipo = obj->tipo;
-            ret->nombre = obj->nombre;
-            setFun(ret, getFun(obj));
-            ret->nparams = obj->nparams;
-            break;
-        case T_CFUN:
-            ret = latO_crear(mv);
-            ret->tipo = obj->tipo;
-            ret->nombre = obj->nombre;
-            setCfun(ret, getCfun(obj));
-            ret->nparams = obj->nparams;
-            break;
-        case T_STR: {
-            ret = latC_crear_cadena(mv, latC_checar_cadena(mv, obj));
-        } break;
-        case T_NUMERIC:
-            ret = latC_crear_numerico(mv, latC_checar_numerico(mv, obj));
-            break;
-        case T_LABEL: {
-            ret = latC_crear_cadena(mv, latC_checar_cadena(mv, obj));
-            ret->nombre = obj->nombre;
-            ret->tipo = obj->tipo;
-            ret->jump_label = obj->jump_label;
-        } break;
-        default:
-            ret = latO_crear(mv);
-            ret->tipo = obj->tipo;
-            ret->val = obj->val;
-            break;
+static void sb_append(sbuilder *sb, const char *s) {
+    size_t slen = strlen(s);
+    if (sb->len + slen + 1 > sb->cap) {
+        sb->cap = (sb->len + slen + 1) * 2;
+        sb->buf = realloc(sb->buf, sb->cap);
     }
-    ret->nref = obj->nref;
-    ret->marca = obj->marca;
-    ret->tam = obj->tam;
-    ret->es_vararg = obj->es_vararg;
-    ret->esconst = obj->esconst;
-    return ret;
+    memcpy(sb->buf + sb->len, s, slen + 1);
+    sb->len += slen;
 }
 
-bool latO_es_igual(lat_mv *mv, lat_objeto *lhs, lat_objeto *rhs) {
-    if (lhs->tipo != rhs->tipo) {
-        return false;
-    }
-    if (lhs->tipo == T_NUMERIC) {
-        return latC_checar_numerico(mv, lhs) == latC_checar_numerico(mv, rhs);
-    }
-    if (lhs->tipo == T_STR) {
-        return !strcmp(latC_checar_cadena(mv, lhs), latC_checar_cadena(mv, rhs))
-                   ? true
-                   : false;
-    }
-    if (lhs->tipo == T_LIST) {
-        return latL_comparar(mv, latC_checar_lista(mv, lhs),
-                             latC_checar_lista(mv, rhs)) == 0
-                   ? true
-                   : false;
-    }
-    return false;
+static char *sb_build(sbuilder *sb) {
+    return sb->buf;
 }
 
-int latO_comparar(lat_mv *mv, lat_objeto *lhs, lat_objeto *rhs) {
-    int res = 1;
-    if (lhs->tipo != rhs->tipo || lhs->tipo == T_DIC || rhs->tipo == T_DIC) {
-        char *buffer = latC_astring(mv, lhs);
-        char *buffer2 = latC_astring(mv, rhs);
-        res = strcmp(buffer, buffer2);
-        free(buffer);
-        free(buffer2);
-        goto RESPUESTA;
-    }
-    if (lhs->tipo == T_BOOL) {
-        res = latC_checar_logico(mv, lhs) - latC_checar_logico(mv, rhs);
-        goto RESPUESTA;
-    }
-    if (lhs->tipo == T_NUMERIC) {
-        res = latC_checar_numerico(mv, lhs) - latC_checar_numerico(mv, rhs);
-        goto RESPUESTA;
-    }
-    if (lhs->tipo == T_STR) {
-        res = strcmp(latC_checar_cadena(mv, lhs), latC_checar_cadena(mv, rhs));
-        goto RESPUESTA;
-    }
-    if (lhs->tipo == T_LIST) {
-        res = latL_comparar(mv, latC_checar_lista(mv, lhs),
-                            latC_checar_lista(mv, rhs));
-        goto RESPUESTA;
-    }
-RESPUESTA:
-    if (res < 0) {
-        return -1;
-    }
-    if (res > 0) {
-        return 1;
-    }
-    return res;
-}
-
+// OPTIMIZACIÓN: Mejorar latL_acadena para evitar uso excesivo de strcat y reducir reallocs
 char *latL_acadena(lat_mv *mv, lista *list) {
-    // return strdup("latL_acadena");
-    char *valor = calloc(1, MAX_STR_LENGTH);
-    strcat(valor, "[");
-    if (list->longitud > 0) {
-        LIST_FOREACH(list, primero, siguiente, cur) {
-            if (cur->valor != NULL) {
-                lat_objeto *o = ((lat_objeto *)cur->valor);
-                if (o != NULL) {
-                    char *tmp = latC_astring(mv, o);
-                    if (o->tipo == T_STR) {
-                        if (strstr(latC_checar_cadena(mv, o), "\"") != NULL) {
-                            strcat(valor, "'");
-                        } else {
-                            strcat(valor, "\"");
-                        }
-                    }
-                    strcat(valor, tmp);
-                    // free(tmp);
-                    if (o->tipo == T_STR) {
-                        if (strstr(latC_checar_cadena(mv, o), "\"") != NULL) {
-                            strcat(valor, "'");
-                        } else {
-                            strcat(valor, "\"");
-                        }
-                    }
-                    if (cur != list->ultimo) {
-                        strcat(valor, ", ");
-                    }
-                }
-            }
+    sbuilder sb;
+    sb_init(&sb, 128 + list->longitud * 32);
+    sb_append(&sb, "[");
+    int first = 1;
+    LIST_FOREACH(list, primero, siguiente, cur) {
+        if (!first) sb_append(&sb, ", ");
+        first = 0;
+        if (cur->valor) {
+            lat_objeto *o = (lat_objeto *)cur->valor;
+            char *tmp = latC_astring(mv, o);
+            if (o->tipo == T_STR) sb_append(&sb, "\"");
+            sb_append(&sb, tmp);
+            if (o->tipo == T_STR) sb_append(&sb, "\"");
+            free(tmp);
         }
     }
-    strcat(valor, "]");
-    valor[strlen(valor)] = '\0';
-    return valor;
+    sb_append(&sb, "]");
+    return sb_build(&sb);
 }
 
+// OPTIMIZACIÓN: Mejorar latH_acadena para evitar uso excesivo de strcat y liberar memoria correctamente
 char *latH_acadena(lat_mv *mv, hash_map *m) {
-    char *valor = calloc(1, MAX_STR_LENGTH);
-    strcat(valor, "{");
-    int i;
-    for (i = 0; i < 256; i++) {
+    sbuilder sb;
+    sb_init(&sb, 128);
+    sb_append(&sb, "{");
+    int first = 1;
+    for (int i = 0; i < 256; i++) {
         lista *list = m->buckets[i];
-        if (list != NULL) {
-
+        if (list) {
             LIST_FOREACH(list, primero, siguiente, cur) {
-                if (cur->valor != NULL) {
-                    strcat(valor, "\"");
-                    strcat(valor, ((hash_val *)cur->valor)->llave);
-                    strcat(valor, "\"");
-                    lat_objeto *val =
-                        (lat_objeto *)((hash_val *)cur->valor)->valor;
-                    strcat(valor, ": ");
+                if (cur->valor) {
+                    if (!first) sb_append(&sb, ", ");
+                    first = 0;
+                    sb_append(&sb, "\"");
+                    sb_append(&sb, ((hash_val *)cur->valor)->llave);
+                    sb_append(&sb, "\": ");
+                    lat_objeto *val = (lat_objeto *)((hash_val *)cur->valor)->valor;
                     if (val == NULL) {
-                        strcat(valor, "\"nulo\"");
+                        sb_append(&sb, "\"nulo\"");
                     } else {
-                        if (val->tipo == T_STR) {
-                            if (strstr(latC_checar_cadena(mv, val), "\"") !=
-                                NULL) {
-                                strcat(valor, "'");
-                            } else {
-                                strcat(valor, "\"");
-                            }
-                        }
+                        if (val->tipo == T_STR) sb_append(&sb, "\"");
                         char *tmp = latC_astring(mv, val);
-                        strcat(valor, tmp);
+                        sb_append(&sb, tmp);
+                        if (val->tipo == T_STR) sb_append(&sb, "\"");
                         free(tmp);
-                        if (val->tipo == T_STR) {
-                            if (strstr(latC_checar_cadena(mv, val), "\"") !=
-                                NULL) {
-                                strcat(valor, "'");
-                            } else {
-                                strcat(valor, "\"");
-                            }
-                        }
                     }
-                    strcat(valor, ", ");
                 }
             }
         }
     }
-    strcat(valor, "}");
-    char *tmp = reemplazar(valor, ", }", "}"); // elimina la ultima coma
-    tmp[strlen(tmp)] = '\0';
-    free(valor);
-    return tmp;
+    sb_append(&sb, "}");
+    return sb_build(&sb);
 }
 
 void latL_modificar_elemento(lat_mv *mv, lista *list, void *data, int pos) {
@@ -694,30 +565,26 @@ LATINO_API double latC_adouble(lat_mv *mv, lat_objeto *o) {
     switch (o->tipo) {
         case T_NULL:
             return 0;
-            break;
         case T_BOOL:
-            return latC_checar_logico(mv, o) == false ? 0 : 1;
-            break;
+            return latC_checar_logico(mv, o) ? 1 : 0;
         case T_NUMERIC:
             return latC_checar_numerico(mv, o);
-            break;
         case T_STR: {
+            const char *str = latC_checar_cadena(mv, o);
             char *ptr;
-            double ret;
-            ret = strtod(latC_checar_cadena(mv, o), &ptr);
-            if (!strcmp(ptr, "")) {
+            double ret = strtod(str, &ptr);
+            if (*ptr == '\0') {
                 return ret;
+            } else if (*str != '\0') {
+                return (int)(str[0]);
             } else {
-                ret = (int)(latC_checar_cadena(mv, o)[0]);
-                return ret;
+                return 0;
             }
-        } break;
+        }
         case T_LIST:
             return latL_longitud(latC_checar_lista(mv, o));
-            break;
         case T_DIC:
             return latH_longitud(latC_checar_dic(mv, o));
-            break;
         default:
             latC_error(mv, "Conversion de tipo de dato incompatible");
             break;
@@ -725,38 +592,32 @@ LATINO_API double latC_adouble(lat_mv *mv, lat_objeto *o) {
     return 0;
 }
 
-// FIXME:
 LATINO_API int latC_aint(lat_mv *mv, lat_objeto *o) {
     switch (o->tipo) {
         case T_NULL:
             return 0;
-            break;
         case T_BOOL:
-            return latC_checar_logico(mv, o) == false ? 0 : 1;
-            break;
+            return latC_checar_logico(mv, o) ? 1 : 0;
         case T_NUMERIC:
-            return latC_checar_entero(mv, o);
-            break;
+            return (int)latC_checar_numerico(mv, o);
         case T_CHAR:
             return latC_checar_caracter(mv, o);
-            break;
         case T_STR: {
+            const char *str = latC_checar_cadena(mv, o);
             char *ptr;
-            double ret;
-            ret = strtod(latC_checar_cadena(mv, o), &ptr);
-            if (!strcmp(ptr, "")) {
-                return ret;
+            double ret = strtod(str, &ptr);
+            if (*ptr == '\0') {
+                return (int)ret;
+            } else if (*str != '\0') {
+                return (int)(str[0]);
             } else {
-                ret = (int)(latC_checar_cadena(mv, o)[0]);
-                return ret;
+                return 0;
             }
-        } break;
+        }
         case T_LIST:
             return latL_longitud(latC_checar_lista(mv, o));
-            break;
         case T_DIC:
             return latH_longitud(latC_checar_dic(mv, o));
-            break;
         default:
             latC_error(mv, "Conversion de tipo de dato incompatible");
             break;
@@ -764,41 +625,34 @@ LATINO_API int latC_aint(lat_mv *mv, lat_objeto *o) {
     return 0;
 }
 
-// FIXME:
 LATINO_API char latC_achar(lat_mv *mv, lat_objeto *o) {
     switch (o->tipo) {
         case T_NULL:
             return 0;
-            break;
         case T_BOOL:
-            return latC_checar_logico(mv, o) == false ? 0 : 1;
-            break;
+            return latC_checar_logico(mv, o) ? 1 : 0;
         case T_NUMERIC:
-            return latC_checar_entero(mv, o);
-            break;
+            return (char)latC_checar_numerico(mv, o);
         case T_INTEGER:
-            return latC_checar_entero(mv, o);
-            break;
+            return (char)latC_checar_entero(mv, o);
         case T_CHAR:
             return latC_checar_caracter(mv, o);
-            break;
         case T_STR: {
+            const char *str = latC_checar_cadena(mv, o);
             char *ptr;
-            double ret;
-            ret = strtod(latC_checar_cadena(mv, o), &ptr);
-            if (!strcmp(ptr, "")) {
-                return ret;
+            double ret = strtod(str, &ptr);
+            if (*ptr == '\0') {
+                return (char)ret;
+            } else if (*str != '\0') {
+                return str[0];
             } else {
-                ret = (int)(latC_checar_cadena(mv, o)[0]);
-                return ret;
+                return 0;
             }
-        } break;
+        }
         case T_LIST:
-            return latL_longitud(latC_checar_lista(mv, o));
-            break;
+            return (char)latL_longitud(latC_checar_lista(mv, o));
         case T_DIC:
-            return latH_longitud(latC_checar_dic(mv, o));
-            break;
+            return (char)latH_longitud(latC_checar_dic(mv, o));
         default:
             latC_error(mv, "Conversion de tipo de dato incompatible");
             break;

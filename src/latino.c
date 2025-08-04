@@ -87,14 +87,18 @@ int main(int argc, char *argv[]) {
     #endif
     setlocale(LC_ALL, "C.UTF-8");
     setlocale(LC_CTYPE, "C.UTF-8");
-    /* para numeros decimales */
-    // setlocale(LC_NUMERIC, "es_MX");
-    // setlocale(LC_MONETARY, "es_MX");
     int i;
     char *infile = NULL;
     int pe = false;
     int pf = false;
-    /* procesa params de latino */
+
+    // Optimización: Evitar múltiples llamadas a getenv en lat_ayuda()
+    char *latino_path = getenv("LATINO_PATH");
+    char *latino_lib = getenv("LATINO_LIB");
+    char *latino_libc = getenv("LATINO_LIBC");
+    char *home = getenv("HOME");
+
+    // Procesa params de latino
     for (i = 1; i < argc; i++) {
         if (strstr(argv[1], ".lat") || argv[1][0] != '-') {
             pf = true;
@@ -105,7 +109,23 @@ int main(int argc, char *argv[]) {
             return EXIT_SUCCESS;
         } else if (!strcmp(argv[i], "-a") || !strcmp(argv[i], "--ayuda") ||
                    !strcmp(argv[i], "--help")) {
-            lat_ayuda();
+            lat_logo();
+            lat_version();
+            printf("%s\n", "-Uso de latino: latino [opcion] [archivo]");
+            printf("\n");
+            printf("%s\n", "Opciones:");
+            printf("%s\n", "-a | --ayuda     : Muestra la ayuda de Latino");
+            printf("%s\n", "-v | --version   : Muestra la version de Latino");
+            printf("%s\n", "-e               : Ejecuta una cadena de codigo");
+            printf("%s\n", "archivo          : Nombre del archivo con extension .lat");
+            printf("%s\n", "Ctrl + C         : Para cerrar");
+            printf("\n");
+            printf("%s\n", "Variables de entorno:");
+            printf("%s\n", "_____________________");
+            printf("%s%s\n", "LATINO_PATH      : ", latino_path ? latino_path : "");
+            printf("%s%s\n", "LATINO_LIB       : ", latino_lib ? latino_lib : "");
+            printf("%s%s\n", "LATINO_LIBC      : ", latino_libc ? latino_libc : "");
+            printf("%s%s\n", "HOME             : ", home ? home : "");
             return EXIT_SUCCESS;
         } else if (!strcmp(argv[i], "-e")) {
             pe = true;
@@ -113,18 +133,20 @@ int main(int argc, char *argv[]) {
     }
     lat_mv *mv = latC_crear_mv();
     if (pe) {
-        /* Ejecuta una cadena de codigo */
+        // Ejecuta una cadena de codigo
         if (argc != 3) {
             printf("Error: Se requiere una cadena para ejecución.\n");
+            latC_destruir_mv(mv);
             return EXIT_FAILURE;
         }
-        char *cmd = malloc(MAX_INPUT_SIZE);
-        strcpy(cmd, argv[2]);
+        // Optimización: Usar strncpy y limitar tamaño
+        char cmd[MAX_INPUT_SIZE];
+        strncpy(cmd, argv[2], MAX_INPUT_SIZE - 1);
+        cmd[MAX_INPUT_SIZE - 1] = '\0';
         latC_apilar(mv, latC_crear_cadena(mv, cmd));
         str_ejecutar(mv);
-        free(cmd);
     } else if (argc > 1 && pf) {
-        /* Ejecuta un archivo de codigo */
+        // Ejecuta un archivo de codigo
         infile = argv[1];
         mv->nombre_archivo = infile;
         mv->global->REPL = false;
@@ -138,12 +160,11 @@ int main(int argc, char *argv[]) {
         if (status == 0 && nodo != NULL) {
             lat_objeto *main_func = latC_analizar(mv, nodo);
             if (mv->global->menu) {
-                // inicio instrucciones para llamar a menu
                 lat_funcion *fval = (lat_funcion *)main_func->val.gc;
                 lat_bytecode *codigo = (lat_bytecode *)fval->codigo;
                 int ninst = main_func->ninst;
-                lat_bytecode *bc = (lat_bytecode *)latM_asignar(
-                    NULL, sizeof(lat_bytecode) * (ninst + 2));
+                // Optimización: Usar calloc para inicializar a cero
+                lat_bytecode *bc = (lat_bytecode *)calloc(ninst + 2, sizeof(lat_bytecode));
                 memcpy(bc, codigo, latM_tamanio(bc));
 #if DEPURAR_MEM
                 printf("main.bc: %p\n", bc);
@@ -158,12 +179,12 @@ int main(int argc, char *argv[]) {
                 lat_objeto *num = latC_crear_numerico(mv, mv->global->argc);
                 latC_apilar(mv, num);
                 latC_apilar(mv, mv->global->argv);
-                // fin instrucciones
                 lat_objeto *new_main = latC_crear_funcion(mv, bc, ninst + 2);
                 new_main->es_vararg = 0;
                 new_main->nparams = 2;
                 status = latC_llamar_funcion(mv, new_main);
                 latO_destruir(mv, new_main);
+                free(bc); // Liberar memoria del bytecode
             } else {
                 status = latC_llamar_funcion(mv, main_func);
             }

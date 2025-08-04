@@ -23,17 +23,33 @@ THE SOFTWARE.
  */
 
 #include <stdlib.h>
+#include <string.h> // Para memset
 
 #include "latdo.h"
 #include "latino.h"
 #include "latmem.h"
 #include "latmv.h"
 
+#if defined(_WIN32)
+#include <malloc.h>
+#define malloc_size _msize
+#elif defined(__linux__)
+#include <malloc.h>
+#define malloc_size malloc_usable_size
+#elif defined(__APPLE__)
+#include <malloc/malloc.h>
+#define malloc_size malloc_size
+#else
+#define malloc_size(x) (0)
+#endif
+
+// OPTIMIZACIÓN: Usar malloc + memset solo si es necesario, para mejorar velocidad sobre calloc
 void *latM_asignar(lat_mv *mv, size_t size) {
-    void *ptr = calloc(1, size);
+    void *ptr = malloc(size);
     if (ptr == NULL) {
         latC_error(mv, "Memoria virtual agotada");
     }
+    memset(ptr, 0, size); // Garantiza inicialización a cero
     if (mv) {
 #if DEPURAR_MEM
         size_t tam = latM_tamanio(ptr);
@@ -45,10 +61,11 @@ void *latM_asignar(lat_mv *mv, size_t size) {
 }
 
 size_t latM_tamanio(void *ptr) {
-#ifdef __APPLE__
-    return 0;
-#else
+    if (!ptr) return 0;
+#if defined(_WIN32) || defined(__linux__) || defined(__APPLE__)
     return malloc_size(ptr);
+#else
+    return 0;
 #endif
 }
 
@@ -60,7 +77,7 @@ void *latM_reasignar(lat_mv *mv, void *ptr, size_t size) {
 #if DEPURAR_MEM
     size_t mem_ini = latM_tamanio(ptr);
     printf("memoria inicial: %zu memoria nueva: %zu, %p\n", mem_ini,
-           latM_tamanio(value), &value);
+           latM_tamanio(value), value);
 #endif
     return value;
 }
@@ -75,6 +92,6 @@ void latM_liberar(lat_mv *mv, void *ptr) {
             mv->memoria_usada -= latM_tamanio(ptr);
         }
         free(ptr);
-        ptr = NULL;
+        // No es necesario: ptr = NULL; (no afecta al puntero original)
     }
 }

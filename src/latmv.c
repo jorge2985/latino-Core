@@ -974,17 +974,228 @@ int latMV_funcion_correr(lat_mv *mv, lat_objeto *func) {
         }
         lat_bytecode *inslist = getFun(func)->codigo;
         lat_bytecode cur;
-        int pc;
-        for (pc = 0, cur = inslist[pc]; cur.ins != HALT; cur = inslist[++pc]) {
+        int pc = 0;
+
+#if USE_COMPUTED_GOTO
+        // OPTIMIZACIÓN: Tabla de etiquetas para despacho rápido
+        static void *dispatch_table[] = {
+            &&op_NOP, &&op_HALT, &&op_UNARY_MINUS, &&op_BINARY_ADD, &&op_BINARY_SUB,
+            &&op_BINARY_MUL, &&op_BINARY_DIV, &&op_BINARY_MOD, &&op_OP_GT, &&op_OP_GE,
+            &&op_OP_LT, &&op_OP_LE, &&op_OP_EQ, &&op_OP_NEQ, &&op_OP_AND, &&op_OP_OR,
+            &&op_OP_NOT, &&op_OP_INC, &&op_OP_DEC, &&op_CONCAT, &&op_LOAD_CONST,
+            &&op_LOAD_NAME, &&op_STORE_NAME, &&op_JUMP_ABSOLUTE, &&op_POP_JUMP_IF_FALSE,
+            &&op_POP_JUMP_IF_TRUE, &&op_PUSH_CTX, &&op_POP_CTX, &&op_CALL_FUNCTION,
+            &&op_RETURN_VALUE, &&op_MAKE_FUNCTION, &&op_LOAD_ATTR, &&op_BUILD_LIST,
+            &&op_STORE_SUBSCR, &&op_BINARY_SUBSCR, &&op_BUILD_MAP, &&op_STORE_MAP,
+            &&op_STORE_ATTR, &&op_SET_GLOBAL, &&op_OP_REGEX, &&op_BINARY_POW,
+            &&op_OP_VAR_ARGS, &&op_OP_PUSH, &&op_OP_POP, &&op_ADJUST_STACK,
+            &&op_LOAD_VAR_ARGS, &&op_SET_LOCAL, &&op_POP_JUMP_IF_NEGATIVE,
+            &&op_JUMP_LABEL, &&op_STORE_LABEL
+        };
+        #define DISPATCH() goto *dispatch_table[cur.ins]
+#else
+        #define DISPATCH() goto dispatch_switch
+#endif
+
+        cur = inslist[pc];
+        DISPATCH();
+
+#if USE_COMPUTED_GOTO
+        // Instrucciones como etiquetas
+        op_NOP:
+            pc++; cur = inslist[pc]; DISPATCH();
+        op_HALT:
+            return 0;
+        op_UNARY_MINUS: {
+            lat_objeto *obj = latC_tope(mv);
+            setNumerico(obj, -(latC_adouble(mv, obj)));
+            pc++; cur = inslist[pc]; DISPATCH();
+        }
+        op_OP_INC: {
+            lat_objeto *name = (lat_objeto *)cur.meta;
+            lat_objeto *ctx = obtener_contexto(mv);
+            lat_objeto *val = latO_obtener_contexto(
+                mv, ctx, latC_checar_cadena(mv, name));
+            if (val == NULL) {
+                val = latC_crear_numerico(mv, 0);
+            }
+            getNumerico(val)++;
+            latO_asignar_ctx(mv, ctx, latC_checar_cadena(mv, name), val);
+            pc++; cur = inslist[pc]; DISPATCH();
+        }
+        op_OP_DEC: {
+            lat_objeto *name = (lat_objeto *)cur.meta;
+            lat_objeto *ctx = obtener_contexto(mv);
+            lat_objeto *val = latO_obtener_contexto(
+                mv, ctx, latC_checar_cadena(mv, name));
+            if (val == NULL) {
+                val = latC_crear_numerico(mv, 0);
+            }
+            getNumerico(val)--;
+            latO_asignar_ctx(mv, ctx, latC_checar_cadena(mv, name), val);
+            pc++; cur = inslist[pc]; DISPATCH();
+        }
+        op_BINARY_ADD: { arith_op(lati_numAdd); pc++; cur = inslist[pc]; DISPATCH(); }
+        op_BINARY_SUB: { arith_op(lati_numSub); pc++; cur = inslist[pc]; DISPATCH(); }
+        op_BINARY_POW: { arith_op(lati_numPow); pc++; cur = inslist[pc]; DISPATCH(); }
+        op_BINARY_MUL: { arith_op(lati_numMul); pc++; cur = inslist[pc]; DISPATCH(); }
+        op_BINARY_DIV: { arith_op(lati_numDiv); pc++; cur = inslist[pc]; DISPATCH(); }
+        op_BINARY_MOD: { arith_op(lati_numMod); pc++; cur = inslist[pc]; DISPATCH(); }
+        op_OP_GT: { mayor_que(mv); pc++; cur = inslist[pc]; DISPATCH(); }
+        op_OP_GE: { mayor_igual(mv); pc++; cur = inslist[pc]; DISPATCH(); }
+        op_OP_LT: { menor_que(mv); pc++; cur = inslist[pc]; DISPATCH(); }
+        op_OP_LE: { menor_igual(mv); pc++; cur = inslist[pc]; DISPATCH(); }
+        op_OP_EQ: { igualdad(mv); pc++; cur = inslist[pc]; DISPATCH(); }
+        op_OP_REGEX: { str_regex(mv); pc++; cur = inslist[pc]; DISPATCH(); }
+        op_OP_NEQ: { diferente(mv); pc++; cur = inslist[pc]; DISPATCH(); }
+        op_OP_AND: { y_logico(mv); pc++; cur = inslist[pc]; DISPATCH(); }
+        op_OP_OR: { o_logico(mv); pc++; cur = inslist[pc]; DISPATCH(); }
+        op_OP_NOT: { no_logico(mv); pc++; cur = inslist[pc]; DISPATCH(); }
+        op_CONCAT: { str_concatenar(mv); pc++; cur = inslist[pc]; DISPATCH(); }
+        op_LOAD_CONST: {
+            lat_objeto *o = (lat_objeto *)cur.meta;
+            latC_apilar(mv, o);
+            pc++; cur = inslist[pc]; DISPATCH();
+        }
+        op_STORE_NAME: {
+            lat_objeto *val = (mv->ptrpila == 0) ? latO_nulo : latC_desapilar(mv);
+            lat_objeto *name = (lat_objeto *)cur.meta;
+            latMV_set_symbol(mv, name, val);
+            pc++; cur = inslist[pc]; DISPATCH();
+        }
+        op_STORE_LABEL: {
+            lat_objeto *name = (lat_objeto *)cur.meta;
+            lat_objeto *val = latO_clonar(mv, name);
+            latMV_set_label(mv, name, val);
+            pc++; cur = inslist[pc]; DISPATCH();
+        }
+        op_SET_GLOBAL: {
+            mv->contexto_actual = obtener_contexto_global(mv);
+            pc++; cur = inslist[pc]; DISPATCH();
+        }
+        op_SET_LOCAL: {
+            mv->contexto_actual = mv->contexto[mv->ptrctx];
+            pc++; cur = inslist[pc]; DISPATCH();
+        }
+        op_LOAD_NAME: {
+            lat_objeto *name = (lat_objeto *)cur.meta;
+            lat_objeto *val = latMV_get_symbol(mv, name);
+            latC_apilar(mv, val);
+            pc++; cur = inslist[pc]; DISPATCH();
+        }
+        op_POP_JUMP_IF_FALSE: {
+            lat_objeto *o = latC_desapilar(mv);
+            if (latC_abool(mv, o) == false) {
+                pc = cur.a;
+                cur = inslist[pc];
+            } else {
+                pc++; cur = inslist[pc];
+            }
+            DISPATCH();
+        }
+        op_POP_JUMP_IF_TRUE: {
+            lat_objeto *o = latC_desapilar(mv);
+            if (latC_abool(mv, o) == true) {
+                pc = cur.a;
+                cur = inslist[pc];
+            } else {
+                pc++; cur = inslist[pc];
+            }
+            DISPATCH();
+        }
+        op_JUMP_ABSOLUTE: {
+            pc = cur.a;
+            cur = inslist[pc];
+            DISPATCH();
+        }
+        op_JUMP_LABEL: {
+            lat_objeto *name = (lat_objeto *)cur.meta;
+            lat_objeto *val = latMV_get_label(mv, name);
+            pc = val->jump_label - 1;
+            cur = inslist[pc];
+            DISPATCH();
+        }
+        op_CALL_FUNCTION: {
+            latMV_call_function(mv, func, cur, inslist[pc + 1]);
+            pc++; cur = inslist[pc]; DISPATCH();
+        }
+        op_RETURN_VALUE: {
+            return cur.a;
+        }
+        op_MAKE_FUNCTION: {
+            lat_objeto *fun = (lat_objeto *)cur.meta;
+            latC_apilar(mv, fun);
+            pc++; cur = inslist[pc]; DISPATCH();
+        }
+        op_LOAD_ATTR: {
+            latMV_load_attr(mv, cur, inslist[pc + 1]);
+            pc++; cur = inslist[pc]; DISPATCH();
+        }
+        op_BUILD_LIST: {
+            latMV_build_list(mv, cur);
+            pc++; cur = inslist[pc]; DISPATCH();
+        }
+        op_STORE_SUBSCR: {
+            latMV_store_subscr(mv);
+            pc++; cur = inslist[pc]; DISPATCH();
+        }
+        op_BINARY_SUBSCR: {
+            binary_subscr(mv);
+            pc++; cur = inslist[pc]; DISPATCH();
+        }
+        op_BUILD_MAP: {
+            lat_objeto *o = latC_crear_dic(mv, latH_crear(mv));
+            latC_apilar(mv, o);
+            pc++; cur = inslist[pc]; DISPATCH();
+        }
+        op_STORE_MAP: {
+            latMV_store_map(mv);
+            pc++; cur = inslist[pc]; DISPATCH();
+        }
+        op_STORE_ATTR: {
+            latMV_store_attr(mv, cur);
+            pc++; cur = inslist[pc]; DISPATCH();
+        }
+        op_OP_VAR_ARGS: {
+            latMV_op_var_args(mv, cur);
+            pc++; cur = inslist[pc]; DISPATCH();
+        }
+        op_LOAD_VAR_ARGS: {
+            latMV_load_var_args(mv);
+            pc++; cur = inslist[pc]; DISPATCH();
+        }
+        op_OP_PUSH: {
+            lat_objeto *obj = (lat_objeto *)cur.meta;
+            latC_apilar(mv, obj ? obj : latO_nulo);
+            pc++; cur = inslist[pc]; DISPATCH();
+        }
+        op_OP_POP: {
+            latC_desapilar(mv);
+            pc++; cur = inslist[pc]; DISPATCH();
+        }
+        op_ADJUST_STACK: {
+            while (cur.a > mv->ptrpila) {
+                latC_apilar(mv, latO_nulo);
+            }
+            while (mv->ptrpila >= (mv->ptrprevio + cur.a)) {
+                latC_desapilar(mv);
+            }
+            pc++; cur = inslist[pc]; DISPATCH();
+        }
+        op_PUSH_CTX: { apilar_contexto(mv, NULL); pc++; cur = inslist[pc]; DISPATCH(); }
+        op_POP_CTX: { desapilar_contexto(mv); pc++; cur = inslist[pc]; DISPATCH(); }
+        op_STORE_LABEL: { /* ya implementado arriba */ pc++; cur = inslist[pc]; DISPATCH(); }
+        op_POP_JUMP_IF_NEGATIVE: { /* No implementado */ pc++; cur = inslist[pc]; DISPATCH(); }
+        // Si alguna instrucción no está implementada, continuar
+        default: pc++; cur = inslist[pc]; DISPATCH();
+#endif // USE_COMPUTED_GOTO
+
+dispatch_switch:
+        for (; cur.ins != HALT; cur = inslist[++pc]) {
             lat_bytecode next = inslist[pc + 1];
             mv->nlin = cur.nlin;
             mv->ncol = cur.ncol;
             mv->nombre_archivo = cur.nombre_archivo;
-#if DEPURAR_MV
-            printf("%i\t", mv->nlin);
-            printf("%i\t", pc);
-            printf("%s\t", latMV_bytecode_nombre(cur.ins));
-#endif
             switch (cur.ins) {
                 case HALT:
                     return 0;
@@ -1208,11 +1419,7 @@ int latMV_funcion_correr(lat_mv *mv, lat_objeto *func) {
                 } break;
                 case OP_PUSH: {
                     lat_objeto *obj = (lat_objeto *)cur.meta;
-                    if (obj != NULL) {
-                        latC_apilar(mv, obj);
-                    } else {
-                        latC_apilar(mv, latO_nulo);
-                    }
+                    latC_apilar(mv, obj);
                 } break;
                 case OP_POP: {
                     latC_desapilar(mv);

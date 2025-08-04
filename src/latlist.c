@@ -42,20 +42,24 @@ LATINO_API lista *latL_crear(lat_mv *mv) {
 }
 
 LATINO_API void latL_destruir(lat_mv *mv, lista *list) {
-
-    LIST_FOREACH(list, primero, siguiente, cur) {
-        if (cur->anterior) {
-            latM_liberar(mv, cur->anterior);
-        }
+    // OPTIMIZACIÓN: Liberar todos los nodos de la lista de forma eficiente
+    nodo_lista *cur = list->primero;
+    while (cur) {
+        nodo_lista *next = cur->siguiente;
+        latM_liberar(mv, cur);
+        cur = next;
     }
-    latM_liberar(mv, list->ultimo);
     latM_liberar(mv, list);
 }
 
 LATINO_API void latL_limpiar(lat_mv *mv, lista *list) {
-
-    LIST_FOREACH(list, primero, siguiente, cur) {
-        latM_liberar(mv, cur->valor);
+    // OPTIMIZACIÓN: Solo liberar los valores, no los nodos
+    nodo_lista *cur = list->primero;
+    while (cur) {
+        if (cur->valor) {
+            latM_liberar(mv, cur->valor);
+        }
+        cur = cur->siguiente;
     }
 }
 
@@ -182,9 +186,7 @@ LATINO_API nodo_lista *latL_obtener_nodo(lat_mv *mv, lista *list, int pos) {
     return NULL;
 }
 
-LATINO_API void latL_insertar_elemento(lat_mv *mv, lista *list, void *data,
-                                       int pos) {
-    // FIXME: Memory leak and for performance
+LATINO_API void latL_insertar_elemento(lat_mv *mv, lista *list, void *data, int pos) {
     int len = latL_longitud(list);
     if (pos < 0 || pos > len) {
         latC_error(mv, "Indice fuera de rango");
@@ -197,23 +199,24 @@ LATINO_API void latL_insertar_elemento(lat_mv *mv, lista *list, void *data,
         latL_agregar(mv, list, data);
         return;
     }
-    lista *tmp1 = latL_crear(mv);
-    lista *tmp2 = latL_crear(mv);
+    // OPTIMIZACIÓN: Inserción directa sin crear listas temporales
+    nodo_lista *cur = list->primero;
     int i = 0;
-
-    LIST_FOREACH(list, primero, siguiente, cur) {
-        if (i < pos) {
-            latL_agregar(mv, tmp1, cur->valor);
-        } else {
-            latL_agregar(mv, tmp2, cur->valor);
-        }
+    while (cur && i < pos) {
+        cur = cur->siguiente;
         i++;
     }
-    lista *nl = latL_crear(mv);
-    latL_extender(mv, nl, tmp1);
-    latL_agregar(mv, nl, data);
-    latL_extender(mv, nl, tmp2);
-    *list = *nl;
-    latM_liberar(mv, tmp1);
-    latM_liberar(mv, tmp2);
+    if (cur) {
+        nodo_lista *node = latM_asignar(mv, sizeof(nodo_lista));
+        node->valor = data;
+        node->anterior = cur->anterior;
+        node->siguiente = cur;
+        if (cur->anterior) {
+            cur->anterior->siguiente = node;
+        } else {
+            list->primero = node;
+        }
+        cur->anterior = node;
+        list->longitud++;
+    }
 }
